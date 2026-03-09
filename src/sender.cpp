@@ -16,7 +16,8 @@ void sender_loop(int thread_id,
                  uint64_t my_query_limit,
                  const Config& cfg,
                  uint64_t interval_ns,
-                 uint64_t tai_start_ns)
+                 uint64_t tai_start_ns,
+                 uint64_t tai_deadline_ns)
 {
     pin_to_cpu(thread_id * 2);
 
@@ -35,6 +36,7 @@ void sender_loop(int thread_id,
     uint64_t pkt_seq = 0;
     uint64_t thread_sent = 0;
     int sock_rr = 0;
+    uint16_t batch_txids[BATCH_SIZE];
 
     while (!stop_flag.load(std::memory_order_relaxed)) {
         if (thread_sent >= my_query_limit) break;
@@ -46,8 +48,23 @@ void sender_loop(int thread_id,
         int fd = sockets[cur_sock];
         auto& tracker = trackers[cur_sock];
 
+        // Check if the first packet in this batch would exceed the runtime deadline
+        uint64_t first_txtime = tai_start_ns + pkt_seq * interval_ns;
+        if (first_txtime >= tai_deadline_ns) break;
+
+        // Clamp batch so no packet exceeds the deadline
+        for (int b = 0; b < batch; b++) {
+            uint64_t txtime = tai_start_ns + (pkt_seq + b) * interval_ns;
+            if (txtime >= tai_deadline_ns) {
+                batch = b;
+                break;
+            }
+        }
+        if (batch == 0) break;
+
         for (int b = 0; b < batch; b++) {
             uint16_t txid = tracker.alloc_txid();
+            batch_txids[b] = txid;
             const auto& eq = queries[query_idx % num_queries];
 
             // Copy pre-encoded packet and stamp transaction ID
@@ -87,9 +104,15 @@ void sender_loop(int thread_id,
             stats.queries_sent += sent;
             thread_sent += sent;
             pkt_seq += sent;
-        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            // Kernel qdisc buffer full — yield briefly
-            sched_yield();
+            // Clear orphaned ring entries for unsent packets in partial batch
+            for (int b = sent; b < batch; b++)
+                tracker.ring[batch_txids[b]].send_timestamp_ns = 0;
+        } else {
+            // All failed (EAGAIN / error) — clear entire batch's ring entries
+            for (int b = 0; b < batch; b++)
+                tracker.ring[batch_txids[b]].send_timestamp_ns = 0;
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                sched_yield();
         }
 
         sock_rr++;

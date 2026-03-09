@@ -16,4 +16,5 @@ void sender_loop(int thread_id,
                  uint64_t my_query_limit,
                  const Config& cfg,
                  uint64_t interval_ns,
-                 uint64_t tai_start_ns);
+                 uint64_t tai_start_ns,
+                 uint64_t tai_deadline_ns);

@@ -248,6 +248,10 @@ int main(int argc, char** argv) {
     // 6. Compute start time — 200ms in the future (CLOCK_TAI)
     uint64_t tai_base = tai_ns() + 200'000'000ULL;
 
+    // TAI deadline: senders will not schedule packets beyond this time
+    uint64_t tai_deadline = tai_base +
+        static_cast<uint64_t>(cfg.total_runtime_s) * 1'000'000'000ULL;
+
     // 7. Print test parameters
     std::printf("\n--- Starting DNS load test ---\n");
     std::printf("Server:              %s:%u\n", cfg.server_addr_str.c_str(), cfg.server_port);
@@ -280,20 +284,11 @@ int main(int argc, char** argv) {
                              per_thread_limit[t],
                              std::cref(cfg),
                              cfg.interval_ns,
-                             tai_base + thread_offset);
+                             tai_base + thread_offset,
+                             tai_deadline);
     }
 
-    // 10. Timer thread: stop after total_runtime
-    std::thread timer([&]{
-        for (uint32_t elapsed = 0;
-             elapsed < cfg.total_runtime_s && !g_stop_flag.load(std::memory_order_relaxed);
-             elapsed++) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
-        g_stop_flag.store(true, std::memory_order_relaxed);
-    });
-
-    // 11. Join sender threads
+    // 10. Join sender threads
     for (auto& s : senders) s.join();
     auto send_end = std::chrono::steady_clock::now();
 
@@ -326,7 +321,6 @@ int main(int argc, char** argv) {
 
     // 13. Join receiver threads
     for (auto& r : receivers) r.join();
-    timer.join();
 
     // 14. Compute test duration (TX window, not just send-phase wall time)
     //     Use the actual scheduled TX window for accurate QPS reporting
