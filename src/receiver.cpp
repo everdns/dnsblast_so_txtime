@@ -73,8 +73,13 @@ void receiver_loop(int thread_id,
                 uint64_t send_ts = tracker.ring[txid].send_timestamp_ns;
                 if (send_ts == 0) continue; // Unknown txid or already processed
 
-                uint64_t rtt_ns = now_ns - send_ts;
                 tracker.ring[txid].send_timestamp_ns = 0; // Mark as received
+
+                // RTT = now - scheduled_txtime.
+                // If response arrives before scheduled TX time (packet wasn't
+                // ETF-paced), now_ns < send_ts and subtraction underflows.
+                // Treat as 0 RTT in that case — the packet left early.
+                uint64_t rtt_ns = (now_ns >= send_ts) ? (now_ns - send_ts) : 0;
 
                 // Check timeout
                 if (rtt_ns > timeout_ns) {
