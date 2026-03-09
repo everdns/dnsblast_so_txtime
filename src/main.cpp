@@ -183,6 +183,14 @@ int main(int argc, char** argv) {
                 std::exit(1);
             }
 
+            // Set socket priority so prio qdisc routes to band 0 → ETF child
+            // priomap index 6 maps to band 0 in the default 3-band prio qdisc
+            int prio = 6;
+            if (setsockopt(fd, SOL_SOCKET, SO_PRIORITY, &prio, sizeof(prio)) < 0) {
+                std::perror("setsockopt SO_PRIORITY");
+                std::exit(1);
+            }
+
             // Enable SO_TXTIME
             struct sock_txtime txcfg{};
             txcfg.clockid = CLOCK_TAI;
@@ -288,20 +296,43 @@ int main(int argc, char** argv) {
     // 11. Join sender threads
     for (auto& s : senders) s.join();
     auto send_end = std::chrono::steady_clock::now();
-    std::printf("All senders finished. Draining responses for %u ms + 100 ms...\n",
-                cfg.query_timeout_ms);
 
-    // 12. Wait one timeout + 100ms fudge for in-flight responses
-    std::this_thread::sleep_for(
-        std::chrono::milliseconds(cfg.query_timeout_ms + 100));
+    // 12. Compute remaining TX drain time
+    //     Senders submit packets to the kernel instantly via SO_TXTIME, but
+    //     the kernel ETF qdisc transmits them over the full scheduled window.
+    //     We must wait until the last scheduled packet has actually been sent
+    //     before starting the timeout drain.
+    uint64_t total_sent = 0;
+    for (int t = 0; t < cfg.num_threads; t++)
+        total_sent += stats[t].queries_sent;
+
+    // The last TX timestamp across all threads is approximately:
+    //   tai_base + (total_sent / num_threads) * interval_ns
+    // which equals tai_base + total_sent * (1e9 / target_qps) / num_threads
+    // = tai_base + total_sent / target_qps seconds
+    uint64_t last_txtime_ns = tai_base + (total_sent / cfg.num_threads) * cfg.interval_ns;
+    uint64_t now_tai = tai_ns();
+    uint64_t remaining_tx_ms = 0;
+    if (last_txtime_ns > now_tai) {
+        remaining_tx_ms = (last_txtime_ns - now_tai) / 1'000'000ULL + 1;
+    }
+    uint64_t drain_ms = remaining_tx_ms + cfg.query_timeout_ms + 100;
+    std::printf("All senders finished. Waiting %lu ms for TX drain + %u ms timeout + 100 ms fudge...\n",
+                remaining_tx_ms, cfg.query_timeout_ms);
+
+    // Wait for kernel to finish transmitting + timeout for responses
+    std::this_thread::sleep_for(std::chrono::milliseconds(drain_ms));
     g_stop_flag.store(true, std::memory_order_relaxed);
 
     // 13. Join receiver threads
     for (auto& r : receivers) r.join();
     timer.join();
 
-    // 14. Compute test duration (send phase only)
-    double duration_s = std::chrono::duration<double>(send_end - test_start).count();
+    // 14. Compute test duration (TX window, not just send-phase wall time)
+    //     Use the actual scheduled TX window for accurate QPS reporting
+    double duration_s = static_cast<double>((total_sent / cfg.num_threads) * cfg.interval_ns) / 1e9;
+    if (duration_s < 0.001) // fallback to wall clock if too small
+        duration_s = std::chrono::duration<double>(send_end - test_start).count();
 
     // 15. Aggregate and report
     aggregate_and_report(stats, trackers, duration_s);
