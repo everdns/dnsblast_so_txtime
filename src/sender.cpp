@@ -46,8 +46,6 @@ void sender_loop(int thread_id,
         int fd = sockets[cur_sock];
         auto& tracker = trackers[cur_sock];
 
-        uint64_t now_ns = mono_ns();
-
         for (int b = 0; b < batch; b++) {
             uint16_t txid = tracker.alloc_txid();
             const auto& eq = queries[query_idx % num_queries];
@@ -57,8 +55,9 @@ void sender_loop(int thread_id,
             uint16_t net_txid = htons(txid);
             std::memcpy(pkt_bufs[b], &net_txid, 2);
 
-            // Record send timestamp for RTT tracking
-            tracker.ring[txid].send_timestamp_ns = now_ns;
+            // Record scheduled TX time (TAI) for accurate RTT tracking
+            uint64_t txtime = tai_start_ns + (pkt_seq + b) * interval_ns;
+            tracker.ring[txid].send_timestamp_ns = txtime;
 
             // iovec
             iovecs[b].iov_base = pkt_bufs[b];
@@ -78,7 +77,6 @@ void sender_loop(int thread_id,
             cmsg->cmsg_type = SCM_TXTIME;
             cmsg->cmsg_len = CMSG_LEN(sizeof(uint64_t));
 
-            uint64_t txtime = tai_start_ns + (pkt_seq + b) * interval_ns;
             std::memcpy(CMSG_DATA(cmsg), &txtime, sizeof(uint64_t));
 
             query_idx++;

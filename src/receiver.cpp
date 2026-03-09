@@ -49,7 +49,7 @@ void receiver_loop(int thread_id,
         int nfds = epoll_wait(epfd, events, MAX_EVENTS, 10 /* ms */);
         if (nfds <= 0) continue;
 
-        uint64_t now_ns = mono_ns();
+        uint64_t now_ns = tai_ns();
 
         for (int e = 0; e < nfds; e++) {
             int sock_idx = static_cast<int>(events[e].data.u32);
