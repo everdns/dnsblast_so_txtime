@@ -39,6 +39,7 @@ static void usage(const char* prog) {
         "  -d, --duration <sec>      Total test duration in seconds (default: 10)\n"
         "  -T, --threads <n>         Number of sender threads (default: 16)\n"
         "  -P, --ports <n>           Ports per sender thread (default: 8)\n"
+        "  -Q, --max-queue <n>       Max queries queued ahead globally (0 = unlimited)\n"
         "  -f, --file <path>         Query input file (required)\n"
         "  -6, --ipv6                Use IPv6\n"
         "  -h, --help                Show this help\n",
@@ -57,6 +58,7 @@ Config parse_args(int argc, char** argv) {
         {"duration",    required_argument, nullptr, 'd'},
         {"threads",     required_argument, nullptr, 'T'},
         {"ports",       required_argument, nullptr, 'P'},
+        {"max-queue",   required_argument, nullptr, 'Q'},
         {"file",        required_argument, nullptr, 'f'},
         {"ipv6",        no_argument,       nullptr, '6'},
         {"help",        no_argument,       nullptr, 'h'},
@@ -64,7 +66,7 @@ Config parse_args(int argc, char** argv) {
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "s:p:q:n:t:d:T:P:f:6h", long_opts, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "s:p:q:n:t:d:T:P:Q:f:6h", long_opts, nullptr)) != -1) {
         switch (opt) {
             case 's': cfg.server_addr_str = optarg; break;
             case 'p': cfg.server_port = static_cast<uint16_t>(std::atoi(optarg)); break;
@@ -74,6 +76,7 @@ Config parse_args(int argc, char** argv) {
             case 'd': cfg.total_runtime_s = static_cast<uint32_t>(std::atoi(optarg)); break;
             case 'T': cfg.num_threads = std::atoi(optarg); break;
             case 'P': cfg.ports_per_thread = std::atoi(optarg); break;
+            case 'Q': cfg.max_queue_depth = std::strtoull(optarg, nullptr, 10); break;
             case 'f': cfg.query_file = optarg; break;
             case '6': cfg.address_family = AF_INET6; break;
             case 'h': usage(argv[0]); std::exit(0);
@@ -127,6 +130,10 @@ Config parse_args(int argc, char** argv) {
     cfg.per_thread_qps = cfg.target_qps / cfg.num_threads;
     if (cfg.per_thread_qps == 0) cfg.per_thread_qps = 1;
     cfg.interval_ns = 1'000'000'000ULL / cfg.per_thread_qps;
+    if (cfg.max_queue_depth > 0) {
+        cfg.per_thread_queue_depth = cfg.max_queue_depth / cfg.num_threads;
+        if (cfg.per_thread_queue_depth == 0) cfg.per_thread_queue_depth = 1;
+    }
 
     return cfg;
 }
@@ -265,6 +272,11 @@ int main(int argc, char** argv) {
                 cfg.num_threads * cfg.ports_per_thread);
     std::printf("Per-thread QPS:      %lu\n", cfg.per_thread_qps);
     std::printf("Interval:            %lu ns\n", cfg.interval_ns);
+    if (cfg.max_queue_depth > 0)
+        std::printf("Max queue depth:     %lu (%lu per thread)\n",
+                    cfg.max_queue_depth, cfg.per_thread_queue_depth);
+    else
+        std::printf("Max queue depth:     unlimited\n");
     std::printf("\n");
 
     // 8. Record wall-clock start time

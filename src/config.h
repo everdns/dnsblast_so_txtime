@@ -18,6 +18,9 @@ struct Config {
     socklen_t server_addr_len = 0;
     int address_family = AF_INET;     // AF_INET or AF_INET6
 
+    // Pacing
+    uint64_t max_queue_depth = 0;     // 0 = unlimited (global, split across threads)
+
     // Threading
     int num_threads = 16;
     int ports_per_thread = 8;
@@ -28,6 +31,7 @@ struct Config {
     // Derived (computed after parsing)
     uint64_t per_thread_qps = 0;
     uint64_t interval_ns = 0;
+    uint64_t per_thread_queue_depth = 0; // max_queue_depth / num_threads
 };
 
 Config parse_args(int argc, char** argv);

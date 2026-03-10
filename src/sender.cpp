@@ -3,6 +3,7 @@
 
 #include <cerrno>
 #include <cstring>
+#include <ctime>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <linux/net_tstamp.h>
@@ -51,6 +52,21 @@ void sender_loop(int thread_id,
         // Check if the first packet in this batch would exceed the runtime deadline
         uint64_t first_txtime = tai_start_ns + pkt_seq * interval_ns;
         if (first_txtime >= tai_deadline_ns) break;
+
+        // Pace submissions: sleep until we're within per-thread queue depth of real time
+        if (cfg.per_thread_queue_depth > 0) {
+            uint64_t max_lookahead_ns = cfg.per_thread_queue_depth * interval_ns;
+            uint64_t earliest_submit = first_txtime > max_lookahead_ns
+                ? first_txtime - max_lookahead_ns : 0;
+            uint64_t now = tai_ns();
+            if (now < earliest_submit) {
+                struct timespec ts;
+                ts.tv_sec  = static_cast<time_t>(earliest_submit / 1'000'000'000ULL);
+                ts.tv_nsec = static_cast<long>(earliest_submit % 1'000'000'000ULL);
+                clock_nanosleep(CLOCK_TAI, TIMER_ABSTIME, &ts, nullptr);
+                if (stop_flag.load(std::memory_order_relaxed)) break;
+            }
+        }
 
         // Clamp batch so no packet exceeds the deadline
         for (int b = 0; b < batch; b++) {
